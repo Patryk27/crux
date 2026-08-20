@@ -216,14 +216,21 @@ impl<Effect, Event> Command<Effect, Event> {
 
         drop(waker);
 
-        // If the task is pending, but there's only one copy of the waker - our one -
-        // it can never be woken up again so we most likely need to evict it.
-        // This happens for shell communication futures when their requests are dropped
+        // If the task is pending, but there's only one copy of the waker - ours
+        // - it can never be woken up again, so we most likely need to evict it.
         //
-        // Note that there is an exception: the task may have used the waker and dropped it,
-        // making it ready, rather than abandoned.
-        let task_is_ready = arc_waker.woken.load(Ordering::Acquire);
-        if result == TaskState::Suspended && !task_is_ready && Arc::strong_count(&arc_waker) < 2 {
+        // Note that there is an exception: the task may have used the waker and
+        // dropped it, making it ready rather than abandoned, which is what
+        // `woken` records.
+        //
+        // `try_unwrap` checks the count with a compare-exchange instead of a
+        // separate load, so a wake cannot land between the count check and the
+        // flag read. Since it acquires on success, the release store to `woken`
+        // is visible here.
+        if result == TaskState::Suspended
+            && let Ok(waker) = Arc::try_unwrap(arc_waker)
+            && !waker.woken.into_inner()
+        {
             return TaskState::Cancelled;
         }
 
